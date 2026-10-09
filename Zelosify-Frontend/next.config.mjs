@@ -2,6 +2,7 @@
 const nextConfig = {
   // Optimize chunk loading and improve stability
   reactStrictMode: true,
+  eslint: { dirs: ["src/features/hiring", "src/app/(Hiring)"] },
   poweredByHeader: false,
   compress: true,
 

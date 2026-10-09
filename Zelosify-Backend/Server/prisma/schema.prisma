@@ -33,6 +33,9 @@ model User {
   // Relation to tenant
   tenant          Tenants?     @relation(fields: [tenantId], references: [tenantId])
 
+  managedOpenings Opening[] @relation("OpeningHiringManager")
+
+  @@unique([id, tenantId])
   @@unique([email, provider])
   @@index([tenantId])
 }
@@ -44,6 +47,7 @@ model Tenants {
   updatedAt           DateTime  @updatedAt
 
   users               User[]
+  openings            Opening[]
 }
 
 enum AuthProvider {
@@ -62,4 +66,111 @@ enum Role {
   PROCUREMENT_MANAGER
   RESOURCE_MANAGER
   VENDOR_MANAGER
+}
+
+enum OpeningStatus {
+  OPEN
+  CLOSED
+  ON_HOLD
+}
+
+enum ProfileStatus {
+  SUBMITTED
+  SHORTLISTED
+  REJECTED
+}
+
+enum RecommendationStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Opening {
+  id                     String        @id @default(uuid())
+  tenantId               String
+  title                  String
+  description            String?
+  location               String?
+  contractType           String?
+  hiringManagerId        String
+  experienceMin          Int
+  experienceMax          Int?
+  requiredSkills         String[]
+  postedDate             DateTime      @default(now())
+  expectedCompletionDate DateTime?
+  actionDate             DateTime?
+  status                 OpeningStatus @default(OPEN)
+  tenant                 Tenants       @relation(fields: [tenantId], references: [tenantId])
+  hiringManager          User          @relation("OpeningHiringManager", fields: [hiringManagerId, tenantId], references: [id, tenantId], onDelete: Restrict, onUpdate: Restrict)
+  hiringProfiles         hiringProfile[]
+  reservations           ProfileUpload[]
+
+  @@index([tenantId, postedDate, id])
+  @@index([tenantId, hiringManagerId, postedDate, id])
+}
+
+model hiringProfile {
+  id                       Int                  @id @default(autoincrement())
+  openingId                String
+  s3Key                    String               @unique
+  uploadedBy               String
+  fileName                 String
+  contentType              String
+  size                     Int
+  submittedAt              DateTime             @default(now())
+  status                   ProfileStatus        @default(SUBMITTED)
+  shortlistedBy            String?
+  shortlistedAt            DateTime?
+  rejectedBy               String?
+  rejectedAt               DateTime?
+  recommended              Boolean?
+  recommendationScore      Float?
+  recommendationReason     String?
+  recommendationLatencyMs  Int?
+  recommendationVersion    String?
+  recommendationConfidence Float?
+  recommendedAt            DateTime?
+  recommendationStatus     RecommendationStatus @default(PENDING)
+  recommendationMetadata   Json?
+  isDeleted                Boolean              @default(false)
+  opening                  Opening              @relation(fields: [openingId], references: [id])
+  job                      RecommendationJob?
+
+  @@index([openingId, isDeleted, submittedAt, id])
+  @@index([openingId, uploadedBy, isDeleted])
+  @@index([recommended])
+}
+
+model ProfileUpload {
+  id          String   @id @default(uuid())
+  openingId   String
+  uploadedBy  String
+  s3Key       String   @unique
+  fileName    String
+  contentType String
+  size        Int
+  expiresAt   DateTime
+  uploadedAt  DateTime?
+  consumedAt  DateTime?
+  opening     Opening  @relation(fields: [openingId], references: [id])
+
+  @@index([openingId, uploadedBy, expiresAt])
+}
+
+model RecommendationJob {
+  id          String               @id @default(uuid())
+  profileId   Int                  @unique
+  state       RecommendationStatus @default(PENDING)
+  attempts    Int                  @default(0)
+  availableAt DateTime             @default(now())
+  lockedUntil DateTime?
+  leaseToken  String?
+  errorCode   String?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  profile     hiringProfile        @relation(fields: [profileId], references: [id])
+
+  @@index([state, availableAt, lockedUntil])
 }

@@ -14,7 +14,13 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:reset": "prisma migrate reset",
     "test": "vitest --config vitest.config.ts",
-    "test:ui": "vitest --config vitest.config.ts --ui"
+    "test:ui": "vitest --config vitest.config.ts --ui",
+    "worker:hiring": "tsx src/modules/hiring/worker.ts",
+    "worker:hiring:start": "node dist/modules/hiring/worker.js",
+    "seed:hiring": "tsx src/scripts/seedHiring.ts",
+    "test:hiring": "vitest run tests/hiring",
+    "test:hiring:integration": "vitest run tests/hiring/integration.test.ts",
+    "test:hiring:performance": "vitest run tests/hiring/performance.test.ts"
   },
   "keywords": [],
   "author": "",

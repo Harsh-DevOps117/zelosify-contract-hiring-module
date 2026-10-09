@@ -7,7 +7,8 @@
     "dev": "next dev -p 5173",
     "build": "next build",
     "start": "next start -p 5173",
-    "lint": "next lint"
+    "lint": "eslint .",
+    "lint:hiring": "eslint src/features/hiring \"src/app/(Hiring)\""
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.14",

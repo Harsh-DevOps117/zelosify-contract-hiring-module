@@ -11,3 +11,7 @@ The repository is intended to organize and submit task-related implementation wo
 
 Regards,
 Zelosify Team
+
+## Contract hiring module
+
+See [arch.md](arch.md) for the implementation and design decisions, and [HIRING_SETUP.md](HIRING_SETUP.md) for configuration, launch commands, API routes, and validation.
