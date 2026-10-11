@@ -7,12 +7,16 @@ import { parseDocument } from "./parser.js";
 import { VERSION } from "./domain.js";
 import { log } from "./logger.js";
 export class RecommendationService {
+  private providerReadyAt = 0;
   constructor(
     private repository: HiringRepository,
     private storage: ProfileStorage,
     private agent: RecommendationAgent,
   ) {}
   async processOne() {
+    // Provider throttling is queue time, not document processing time. All worker
+    // consumers in this process share this cooldown to avoid exhausting jobs.
+    if (Date.now() < this.providerReadyAt) return false;
     const now = new Date();
     const leaseToken = randomUUID();
     const job = await this.repository.transaction(async (tx) => {
@@ -89,7 +93,14 @@ export class RecommendationService {
         },
         async (abort) =>
           parseDocument(
-            await this.storage.get(profile.s3Key, abort),
+            await this.storage.get(
+              {
+                documentKey: profile.documentKey,
+                tenantId: opening.tenantId,
+                uploadedBy: profile.uploadedBy,
+              },
+              abort,
+            ),
             profile.contentType,
             abort,
           ),
@@ -145,10 +156,15 @@ export class RecommendationService {
         : error instanceof Error && /^[A-Z_]+$/.test(error.message)
           ? error.message
           : "PROCESSING_FAILED";
+      const rateLimited = code === "PROVIDER_RATE_LIMITED";
       const retry =
-        job.attempts < 3 &&
+        (rateLimited || job.attempts < 3) &&
         !["PROFILE_DELETED", "DOCUMENT_PARSE_FAILED"].includes(code);
       const latencyMs = Math.round(performance.now() - started);
+      const retryDelay = rateLimited
+        ? Math.max(1000, Number((error as { retryAfterMs?: number })?.retryAfterMs) || 60000)
+        : 1000 * 2 ** job.attempts;
+      if (rateLimited) this.providerReadyAt = Math.max(this.providerReadyAt, Date.now() + retryDelay);
       await this.repository.transaction(async (tx) => {
         const owned = await tx.recommendationJob.updateMany({
           where: { id: job.id, leaseToken, state: "PROCESSING" },
@@ -157,7 +173,8 @@ export class RecommendationService {
             lockedUntil: null,
             leaseToken: null,
             errorCode: code,
-            availableAt: new Date(Date.now() + 1000 * 2 ** job.attempts),
+            availableAt: new Date(Date.now() + retryDelay),
+            ...(rateLimited ? { attempts: { decrement: 1 } } : {}),
           },
         });
         if (!owned.count) return;

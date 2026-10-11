@@ -9,11 +9,11 @@ import { HiringError, MAX_FILE_SIZE, PDF, PPTX } from "./domain.js";
 import { hiringController } from "./controller.js";
 import { HiringRepository } from "./repository.js";
 import { HiringService } from "./service.js";
-import { S3ProfileStorage, type ProfileStorage } from "./storage.js";
+import { PostgresProfileStorage, type ProfileStorage } from "./storage.js";
 import { log } from "./logger.js";
 export function createHiringRouter(
   db: PrismaClient,
-  storage: ProfileStorage = new S3ProfileStorage(),
+  storage: ProfileStorage = new PostgresProfileStorage(db),
   authentication: RequestHandler = hiringAuthentication(db),
 ) {
   const router = express.Router();
@@ -135,18 +135,16 @@ export function createHiringRouter(
           ? "FILE_TOO_LARGE"
           : "INTERNAL_ERROR";
     log("hiring.error", { requestId: res.locals.requestId, code, status });
-    res
-      .status(status)
-      .json({
-        code,
-        message:
-          error instanceof HiringError
-            ? error.message
-            : status === 413
-              ? "File exceeds the 10 MB limit"
-              : "The request could not be completed",
-        requestId: res.locals.requestId,
-      });
+    res.status(status).json({
+      code,
+      message:
+        error instanceof HiringError
+          ? error.message
+          : status === 413
+            ? "File exceeds the 10 MB limit"
+            : "The request could not be completed",
+      requestId: res.locals.requestId,
+    });
   };
   router.use(errors);
   return router;

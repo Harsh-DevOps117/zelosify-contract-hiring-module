@@ -1,5 +1,5 @@
-import Register from "@/pages/LandingPage/auth/RegisterPage";
+import Component from "@/features/onboarding/RegisterPage";
 
-export default function page() {
-  return <Register />;
+export default function Page() {
+  return <Component />;
 }

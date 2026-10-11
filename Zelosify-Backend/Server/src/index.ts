@@ -21,6 +21,7 @@ import vendorRoutes from "./routers/vendor/vendorRoutes.js";
 import hiringManagerRoutes from "./routers/hiring/hiringManagerRoutes.js";
 import { createHiringRouter } from "./modules/hiring/routes.js";
 import prisma from "./config/prisma/prisma.js";
+import { register as registerWithTotp } from "./modules/onboarding/register.js";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -75,6 +76,7 @@ async function startServer() {
     // User authentication and authorization
     app.use("/api/v1", createHiringRouter(prisma));
     app.use("/api", createHiringRouter(prisma));
+    app.post("/api/v1/auth/register", registerWithTotp);
     app.use("/api/v1/auth", authRoutes);
 
     // AWS integration

@@ -1,4 +1,4 @@
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Actor } from "./domain.js";
 import { fail, PDF, PPTX, profileScope, VERSION } from "./domain.js";
 import {
@@ -62,7 +62,7 @@ export class HiringService {
             openingId,
             uploadedBy: actor.id,
             ...file,
-            s3Key: `${actor.tenantId}/${openingId}/${Date.now()}_${id}_${safeName}`,
+            documentKey: `${actor.tenantId}/${openingId}/${Date.now()}_${id}_${safeName}`,
             expiresAt: new Date(Date.now() + 15 * 60 * 1000),
           },
         });
@@ -86,70 +86,65 @@ export class HiringService {
     ticket: string,
   ) {
     this.vendor(actor);
-    await this.repository.opening(actor, openingId);
-    const reservation = await this.repository.db.profileUpload.findFirst({
-      where: {
-        id: uploadId,
-        openingId,
-        uploadedBy: actor.id,
-        opening: { tenantId: actor.tenantId },
-        consumedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-    });
-    if (!reservation)
-      return fail(404, "NOT_FOUND", "Upload reservation not found or expired");
-    verifyUploadTicket(reservation, ticket);
-    if (
-      !Buffer.isBuffer(bytes) ||
-      bytes.length !== reservation.size ||
-      contentType !== reservation.contentType
-    )
-      return fail(
-        422,
-        "INVALID_FILE",
-        "Uploaded bytes do not match the reservation",
-      );
-    verifyFile(bytes, contentType);
-    if (!reservation.uploadedAt) {
-      try {
-        await this.storage.put(reservation.s3Key, bytes, contentType);
-      } catch (error) {
-        if (
-          (error as { $metadata?: { httpStatusCode?: number } }).$metadata
-            ?.httpStatusCode !== 412
-        )
-          throw error;
-        const existing = await this.storage.get(reservation.s3Key);
-        if (
-          createHash("sha256").update(existing).digest("hex") !==
-          createHash("sha256").update(bytes).digest("hex")
-        )
-          return fail(
-            409,
-            "UPLOAD_CONFLICT",
-            "Upload reservation already contains another file",
-          );
-      }
-      await this.repository.transaction(async (tx) => {
-        const updated = await tx.profileUpload.updateMany({
-          where: {
-            id: uploadId,
-            uploadedBy: actor.id,
-            opening: { tenantId: actor.tenantId },
-            consumedAt: null,
-            expiresAt: { gt: new Date() },
-          },
-          data: { uploadedAt: new Date() },
-        });
-        if (!updated.count)
-          return fail(
-            409,
-            "UPLOAD_EXPIRED",
-            "Upload expired before completion",
-          );
+    await this.repository.transaction(async (tx) => {
+      const opening = await this.repository.opening(actor, openingId, tx);
+      if (opening.status !== "OPEN")
+        return fail(
+          409,
+          "OPENING_CLOSED",
+          "This opening is not accepting profiles",
+        );
+      const reservation = await tx.profileUpload.findFirst({
+        where: {
+          id: uploadId,
+          openingId,
+          uploadedBy: actor.id,
+          opening: { tenantId: actor.tenantId },
+          consumedAt: null,
+          expiresAt: { gt: new Date() },
+        },
       });
-    }
+      if (!reservation)
+        return fail(
+          404,
+          "NOT_FOUND",
+          "Upload reservation not found or expired",
+        );
+      verifyUploadTicket(reservation, ticket);
+      if (
+        !Buffer.isBuffer(bytes) ||
+        bytes.length !== reservation.size ||
+        contentType !== reservation.contentType
+      ) {
+        return fail(
+          422,
+          "INVALID_FILE",
+          "Uploaded bytes do not match the reservation",
+        );
+      }
+      verifyFile(bytes, contentType);
+      await this.storage.put(
+        tx,
+        {
+          documentKey: reservation.documentKey,
+          tenantId: actor.tenantId,
+          uploadedBy: actor.id,
+        },
+        bytes,
+      );
+      const updated = await tx.profileUpload.updateMany({
+        where: {
+          id: uploadId,
+          uploadedBy: actor.id,
+          opening: { tenantId: actor.tenantId },
+          consumedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        data: { uploadedAt: reservation.uploadedAt ?? new Date() },
+      });
+      if (!updated.count)
+        return fail(409, "UPLOAD_EXPIRED", "Upload expired before completion");
+    });
     return { id: uploadId, uploaded: true };
   }
   async submit(actor: Actor, openingId: string, uploadIds: string[]) {
@@ -163,6 +158,7 @@ export class HiringService {
           uploadedBy: actor.id,
           opening: { tenantId: actor.tenantId },
         },
+        include: { document: { select: { documentKey: true } } },
       });
       if (uploads.length !== uploadIds.length)
         return fail(404, "NOT_FOUND", "Upload reservation not found");
@@ -170,7 +166,7 @@ export class HiringService {
         return {
           items: await tx.hiringProfile.findMany({
             where: {
-              s3Key: { in: uploads.map((upload) => upload.s3Key) },
+              documentKey: { in: uploads.map((upload) => upload.documentKey) },
               ...profileScope(actor),
             },
             select: vendorProfileSelect,
@@ -188,6 +184,7 @@ export class HiringService {
           (upload) =>
             upload.consumedAt ||
             !upload.uploadedAt ||
+            !upload.document ||
             upload.expiresAt <= new Date(),
         )
       )
@@ -202,7 +199,7 @@ export class HiringService {
           data: {
             openingId,
             uploadedBy: actor.id,
-            s3Key: upload.s3Key,
+            documentKey: upload.documentKey,
             fileName: upload.fileName,
             size: upload.size,
             contentType: upload.contentType,
@@ -300,7 +297,11 @@ export class HiringService {
   }
   async file(actor: Actor, id: number) {
     const profile = await this.repository.profile(actor, id);
-    const bytes = await this.storage.get(profile.s3Key);
+    const bytes = await this.storage.get({
+      documentKey: profile.documentKey,
+      tenantId: actor.tenantId,
+      uploadedBy: profile.uploadedBy,
+    });
     return {
       bytes,
       fileName: profile.fileName,

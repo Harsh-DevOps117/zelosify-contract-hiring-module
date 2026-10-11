@@ -22,6 +22,13 @@ export interface LlmProvider {
     signal: AbortSignal,
   ): Promise<Completion>;
 }
+export const getGroqModel = () =>
+  process.env.GROQ_MODEL?.trim() || "qwen/qwen3.8-27b";
+export class ProviderRateLimitError extends Error {
+  constructor(readonly retryAfterMs: number) {
+    super("PROVIDER_RATE_LIMITED");
+  }
+}
 export class GroqProvider implements LlmProvider {
   async complete(
     messages: Message[],
@@ -29,14 +36,17 @@ export class GroqProvider implements LlmProvider {
     signal: AbortSignal,
   ): Promise<Completion> {
     const key =
-      process.env.GROQ_API_KEY ||
+      process.env.LLM_API_KEY?.trim() ||
+      process.env.GROQ_API_KEY?.trim() ||
       fail(
         503,
         "LLM_UNCONFIGURED",
         "Recommendation provider is not configured",
       );
+    const model = getGroqModel();
+    const baseUrl = (process.env.LLM_BASE_URL?.trim() || "https://api.groq.com/openai/v1").replace(/\/$/, "");
     const response = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
+      `${baseUrl}/chat/completions`,
       {
         method: "POST",
         signal,
@@ -45,13 +55,18 @@ export class GroqProvider implements LlmProvider {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile",
+          model,
           messages,
-          tools,
-          tool_choice: "auto",
+          ...(tools.length
+            ? { tools, tool_choice: "auto", parallel_tool_calls: true }
+            : { response_format: { type: "json_object" } }),
+          ...(model === "qwen/qwen3.8-27b"
+            ? { reasoning_effort: "none" }
+            : model.startsWith("openai/gpt-oss-")
+              ? { reasoning_effort: "low", include_reasoning: false }
+              : {}),
           temperature: 0,
           max_completion_tokens: 1200,
-          parallel_tool_calls: true,
         }),
       },
     );
@@ -66,9 +81,21 @@ export class GroqProvider implements LlmProvider {
       )
         throw new Error("MALFORMED_LLM_RESPONSE");
     }
+    if (response.status === 429) {
+      const retryAfter = response.headers.get("retry-after");
+      const seconds = Number(retryAfter);
+      const delay = retryAfter && Number.isFinite(seconds)
+        ? seconds * 1000
+        : retryAfter ? Date.parse(retryAfter) - Date.now() : 60000;
+      throw new ProviderRateLimitError(Number.isFinite(delay) ? Math.min(3600000, Math.max(1000, delay)) : 60000);
+    }
     if (!response.ok)
       throw new Error(
-        response.status === 429 ? "PROVIDER_RATE_LIMITED" : "PROVIDER_FAILED",
+        response.status === 401 || response.status === 403
+            ? "PROVIDER_AUTH_FAILED"
+            : response.status === 404
+              ? "PROVIDER_MODEL_UNAVAILABLE"
+              : "PROVIDER_FAILED",
       );
     const result = (await response.json()) as {
       choices?: { message?: Message }[];

@@ -1,0 +1,40 @@
+{
+  "realm": "Zelosify",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "roles": {
+    "realm": [
+      { "name": "ADMIN" },
+      { "name": "BUSINESS_APPROVER" },
+      { "name": "BUSINESS_USER" },
+      { "name": "FINANCE_MANAGER" },
+      { "name": "HIRING_MANAGER" },
+      { "name": "IT_VENDOR" },
+      { "name": "PROCUREMENT_MANAGER" },
+      { "name": "RESOURCE_MANAGER" },
+      { "name": "VENDOR_MANAGER" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "dynamic-client",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${KEYCLOAK_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://localhost:5173/*"],
+      "webOrigins": ["http://localhost:5173"],
+      "defaultClientScopes": [
+        "basic",
+        "web-origins",
+        "roles",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": ["offline_access"]
+    }
+  ]
+}

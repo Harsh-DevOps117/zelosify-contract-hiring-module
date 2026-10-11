@@ -11,7 +11,7 @@ import { HiringRepository } from "../../src/modules/hiring/repository.js";
 import { HiringService } from "../../src/modules/hiring/service.js";
 import { RecommendationService } from "../../src/modules/hiring/recommendation-service.js";
 import { RecommendationAgent } from "../../src/modules/hiring/agent/orchestrator.js";
-import type { ProfileStorage } from "../../src/modules/hiring/storage.js";
+import { PostgresProfileStorage } from "../../src/modules/hiring/storage.js";
 import { PDF } from "../../src/modules/hiring/domain.js";
 import { requirements, pdfFixture, ScriptedProvider } from "./fixtures.js";
 const enabled = Boolean(process.env.HIRING_TEST_DATABASE_URL);
@@ -27,18 +27,7 @@ suite("hiring HTTP integration with PostgreSQL and verified JWTs", () => {
   let tenantId: string;
   let profileId: number;
   const schema = `hiring_test_${randomUUID().replaceAll("-", "")}`;
-  const objects = new Map<string, Buffer>();
-  const storage: ProfileStorage = {
-    put: async (key, bytes) => {
-      if (objects.has(key)) throw { $metadata: { httpStatusCode: 412 } };
-      objects.set(key, bytes);
-    },
-    get: async (key) => {
-      const bytes = objects.get(key);
-      if (!bytes) throw new Error("MISSING_FILE");
-      return bytes;
-    },
-  };
+  let storage: PostgresProfileStorage;
   const { publicKey, privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
   });
@@ -127,6 +116,7 @@ suite("hiring HTTP integration with PostgreSQL and verified JWTs", () => {
       { env: { ...process.env, DATABASE_URL: url.toString() }, stdio: "pipe" },
     );
     db = new PrismaClient({ datasources: { db: { url: url.toString() } } });
+    storage = new PostgresProfileStorage(db);
     jwks = createServer((_req, res) => {
       res.setHeader("Content-Type", "application/json");
       res.end(
@@ -265,7 +255,8 @@ suite("hiring HTTP integration with PostgreSQL and verified JWTs", () => {
   it("uploads, submits, recommends and shortlists with an atomic durable job", async () => {
     const profile = await submit();
     profileId = profile.id;
-    expect(profile).not.toHaveProperty("s3Key");
+    expect(profile).not.toHaveProperty("documentKey");
+    expect(profile).not.toHaveProperty("bytes");
     expect(profile).not.toHaveProperty("recommendationScore");
     expect(await db.recommendationJob.count({ where: { profileId } })).toBe(1);
     const worker = new RecommendationService(
@@ -497,6 +488,197 @@ suite("hiring HTTP integration with PostgreSQL and verified JWTs", () => {
       ).attempts,
     ).toBe(1);
     expect(complete).toHaveBeenCalledTimes(6);
+  });
+  it("pauses workers on provider rate limits without consuming processing attempts", async () => {
+    const profile = await submit();
+    const provider = new ScriptedProvider();
+    const complete = vi.spyOn(provider, "complete").mockRejectedValue(
+      Object.assign(new Error("PROVIDER_RATE_LIMITED"), { retryAfterMs: 5000 }),
+    );
+    const worker = new RecommendationService(new HiringRepository(db), storage, new RecommendationAgent(provider));
+    expect(await worker.processOne()).toBe(true);
+    const job = await db.recommendationJob.findUniqueOrThrow({where:{profileId:profile.id}});
+    expect(job.state).toBe("PENDING");
+    expect(job.attempts).toBe(0);
+    expect(job.errorCode).toBe("PROVIDER_RATE_LIMITED");
+    expect(job.availableAt.getTime()).toBeGreaterThan(Date.now() + 4000);
+    expect(await worker.processOne()).toBe(false);
+    expect(complete).toHaveBeenCalledTimes(1);
+    await new HiringService(new HiringRepository(db), storage).remove(
+      {id:users.get("vendor")!.id,tenantId,role:"IT_VENDOR"}, profile.id,
+    );
+  });
+  it("stores actual bytes in PostgreSQL and survives adapter recreation", async () => {
+    const profile = await db.hiringProfile.findUniqueOrThrow({
+      where: { id: profileId },
+    });
+    const document = await db.profileDocument.findUniqueOrThrow({
+      where: { documentKey: profile.documentKey },
+    });
+    expect(Buffer.from(document.bytes)).toEqual(pdfFixture());
+    const reconnected = new PostgresProfileStorage(db);
+    expect(
+      await reconnected.get({
+        documentKey: profile.documentKey,
+        tenantId,
+        uploadedBy: users.get("vendor")!.id,
+      }),
+    ).toEqual(pdfFixture());
+    await expect(
+      reconnected.get({
+        documentKey: profile.documentKey,
+        tenantId: users.get("foreign")!.tenantId,
+        uploadedBy: users.get("vendor")!.id,
+      }),
+    ).rejects.toMatchObject({ status: 404 });
+    await expect(
+      reconnected.get({
+        documentKey: profile.documentKey,
+        tenantId,
+        uploadedBy: users.get("vendor2")!.id,
+      }),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+  it("retries identical uploads without replacing stored bytes", async () => {
+    const bytes = pdfFixture();
+    const response = await request(
+      `/vendor/openings/${openingId}/profiles/presign`,
+      "vendor",
+      "POST",
+      {
+        files: [
+          { fileName: "immutable.pdf", size: bytes.length, contentType: PDF },
+        ],
+      },
+    );
+    const { uploads } = await response.json();
+    expect(
+      (await request(uploads[0].uploadPath, "vendor", "PUT", bytes)).status,
+    ).toBe(200);
+    expect(
+      (await request(uploads[0].uploadPath, "vendor", "PUT", bytes)).status,
+    ).toBe(200);
+    const other = Buffer.from(bytes);
+    const offset = other.indexOf("React");
+    other.write("Other", offset);
+    expect(
+      (await request(uploads[0].uploadPath, "vendor", "PUT", other)).status,
+    ).toBe(409);
+    const upload = await db.profileUpload.findUniqueOrThrow({
+      where: { id: uploads[0].id },
+    });
+    expect(
+      await db.profileDocument.count({
+        where: { documentKey: upload.documentKey },
+      }),
+    ).toBe(1);
+    expect(
+      await storage.get({
+        documentKey: upload.documentKey,
+        tenantId,
+        uploadedBy: users.get("vendor")!.id,
+      }),
+    ).toEqual(bytes);
+  });
+  it("rolls back blob bytes and upload state when completion fails", async () => {
+    const bytes = pdfFixture();
+    const response = await request(
+      `/vendor/openings/${openingId}/profiles/presign`,
+      "vendor",
+      "POST",
+      {
+        files: [
+          { fileName: "rollback.pdf", size: bytes.length, contentType: PDF },
+        ],
+      },
+    );
+    const { uploads } = await response.json();
+    const originalPut = storage.put.bind(storage);
+    const broken = {
+      get: storage.get.bind(storage),
+      put: async (...args: Parameters<typeof storage.put>) => {
+        await originalPut(...args);
+        throw new Error("AFTER_BLOB_WRITE");
+      },
+    };
+    const service = new HiringService(new HiringRepository(db), broken);
+    const ticket = new URL(uploads[0].uploadPath, base).searchParams.get(
+      "ticket",
+    )!;
+    await expect(
+      service.upload(
+        { id: users.get("vendor")!.id, tenantId, role: "IT_VENDOR" },
+        openingId,
+        uploads[0].id,
+        bytes,
+        PDF,
+        ticket,
+      ),
+    ).rejects.toThrow("AFTER_BLOB_WRITE");
+    const upload = await db.profileUpload.findUniqueOrThrow({
+      where: { id: uploads[0].id },
+    });
+    expect(upload.uploadedAt).toBeNull();
+    expect(
+      await db.profileDocument.count({
+        where: { documentKey: upload.documentKey },
+      }),
+    ).toBe(0);
+  });
+  it("does not accept submission metadata without actual document bytes", async () => {
+    const response = await request(
+      `/vendor/openings/${openingId}/profiles/presign`,
+      "vendor",
+      "POST",
+      {
+        files: [
+          {
+            fileName: "missing.pdf",
+            size: pdfFixture().length,
+            contentType: PDF,
+          },
+        ],
+      },
+    );
+    const { uploads } = await response.json();
+    await db.$transaction((tx) =>
+      tx.profileUpload.update({
+        where: { id: uploads[0].id },
+        data: { uploadedAt: new Date() },
+      }),
+    );
+    const before = await db.hiringProfile.count();
+    expect(
+      (
+        await request(
+          `/vendor/openings/${openingId}/profiles/upload`,
+          "vendor",
+          "POST",
+          { uploadIds: [uploads[0].id] },
+        )
+      ).status,
+    ).toBe(409);
+    expect(await db.hiringProfile.count()).toBe(before);
+  });
+  it("keeps document payloads out of profile listing queries", async () => {
+    const query = vi.spyOn(db.profileDocument, "findFirst");
+    try {
+      const response = await request(
+        `/hiring-manager/openings/${openingId}/profiles`,
+        "manager",
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.items.length).toBeGreaterThan(0);
+      for (const item of body.items) {
+        expect(item).not.toHaveProperty("bytes");
+        expect(item).not.toHaveProperty("documentKey");
+        expect(item).not.toHaveProperty("document");
+      }
+      expect(query).not.toHaveBeenCalled();
+    } finally {
+      query.mockRestore();
+    }
   });
   it("soft deletes and removes file access without hard deleting records", async () => {
     expect(

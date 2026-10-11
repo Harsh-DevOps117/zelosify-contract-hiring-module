@@ -156,7 +156,7 @@ describe("tool-using recommendation agent", () => {
       registry.invoke("read_other_tenant", {}, signal()),
     ).rejects.toThrow("UNKNOWN_TOOL");
     await expect(
-      registry.invoke("parse_resume", { s3Key: "another/tenant" }, signal()),
+      registry.invoke("parse_resume", { documentKey: "another/tenant" }, signal()),
     ).rejects.toThrow();
   });
   it("enforces tool prerequisites and grounded skills", async () => {

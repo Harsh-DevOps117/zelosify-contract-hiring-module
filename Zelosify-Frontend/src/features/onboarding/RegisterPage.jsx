@@ -1,0 +1,316 @@
+"use client";
+
+import { useCallback, useState } from "react";
+import { motion } from "framer-motion";
+import { AiOutlineEye, AiOutlineEyeInvisible } from "react-icons/ai";
+import axiosInstance from "@/utils/Axios/AxiosInstance";
+import Link from "next/link";
+
+export default function Register() {
+  const [formData, setFormData] = useState({
+    username: "",
+    email: "",
+    password: "",
+    confirmPassword: "",
+    firstName: "",
+    lastName: "",
+    phoneNumber: "",
+    tenantId: "",
+    department: "",
+    role: "IT_VENDOR",
+  });
+
+  const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  const handleChange = useCallback((e) => {
+    setFormData((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+  }, []);
+
+  const validateForm = useCallback(() => {
+    if (formData.password !== formData.confirmPassword) {
+      setError("Passwords do not match");
+      return false;
+    }
+    if (formData.password.length < 8) {
+      setError("Password must be at least 8 characters long");
+      return false;
+    }
+    return true;
+  }, [formData.password, formData.confirmPassword]);
+
+  const handleSubmit = useCallback(
+    async (e) => {
+      e.preventDefault();
+      setError("");
+
+      if (!validateForm()) return;
+
+      setIsLoading(true);
+      try {
+        const requestData = {
+          username: formData.username,
+          email: formData.email,
+          password: formData.password,
+          firstName: formData.firstName,
+          lastName: formData.lastName,
+          phoneNumber: formData.phoneNumber,
+          tenantId: formData.tenantId.trim(),
+          department: formData.department,
+          role: formData.role,
+        };
+
+        const res = await axiosInstance.post("/auth/register", requestData);
+
+        sessionStorage.setItem(
+          "totpSetup",
+          JSON.stringify({
+            qrCode: res.data.qrCode,
+          })
+        );
+
+        window.location.href = "/setup-totp";
+      } catch (err) {
+        console.error("Registration error:", err);
+
+        if (err.response) {
+          const { status, data } = err.response;
+          console.error(`Registration error status: ${status}, message:`, data);
+
+          if (status === 400 && data.message === "User already exists.") {
+            setError(
+              "Username or email already in use. Please choose another."
+            );
+          } else {
+            setError(data?.message || data?.error || "Registration failed. Please try again.");
+          }
+        } else {
+          setError(
+            "Network error. Please check your connection and try again."
+          );
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [formData, validateForm]
+  );
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="bg-white dark:bg-gray-800 p-8 rounded-xl shadow-lg"
+    >
+      <div className="flex flex-col justify-center items-center gap-2">
+        <img
+          src={"/assets/logos/zelosify_Dark.png"}
+          alt="Zelosify Dark Logo"
+          width={120}
+          height={40}
+        />
+
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-6 text-center">
+          Create Account
+        </h1>
+      </div>
+
+      {error && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 p-3 rounded-lg mb-4 text-sm"
+        >
+          {error}
+        </motion.div>
+      )}
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+              Username
+            </label>
+            <input
+              name="username"
+              required
+              onChange={handleChange}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-900 dark:text-white transition-colors duration-200"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+              Email
+            </label>
+            <input
+              name="email"
+              type="email"
+              required
+              onChange={handleChange}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-900 dark:text-white transition-colors duration-200"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+            Password
+          </label>
+          <div className="relative">
+            <input
+              name="password"
+              type={showPassword ? "text" : "password"}
+              required
+              onChange={handleChange}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-900 dark:text-white transition-colors duration-200"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword(!showPassword)}
+              className="absolute inset-y-0 right-0 pr-3 flex items-center text-sm leading-5"
+            >
+              {showPassword ? (
+                <AiOutlineEyeInvisible className="h-6 w-6 text-gray-700 dark:text-gray-300" />
+              ) : (
+                <AiOutlineEye className="h-6 w-6 text-gray-700 dark:text-gray-300" />
+              )}
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+            Confirm Password
+          </label>
+          <div className="relative">
+            <input
+              name="confirmPassword"
+              type={showConfirmPassword ? "text" : "password"}
+              required
+              onChange={handleChange}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-900 dark:text-white transition-colors duration-200"
+            />
+            <button
+              type="button"
+              onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+              className="absolute inset-y-0 right-0 pr-3 flex items-center text-sm leading-5"
+            >
+              {showConfirmPassword ? (
+                <AiOutlineEyeInvisible className="h-6 w-6 text-gray-700 dark:text-gray-300" />
+              ) : (
+                <AiOutlineEye className="h-6 w-6 text-gray-700 dark:text-gray-300" />
+              )}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+              First Name
+            </label>
+            <input
+              name="firstName"
+              required
+              onChange={handleChange}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-900 dark:text-white transition-colors duration-200"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+              Last Name
+            </label>
+            <input
+              name="lastName"
+              required
+              onChange={handleChange}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-900 dark:text-white transition-colors duration-200"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+            Phone Number
+          </label>
+          <input
+            name="phoneNumber"
+            required
+            onChange={handleChange}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-900 dark:text-white transition-colors duration-200"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+            Organization ID
+          </label>
+          <input
+            name="tenantId"
+            placeholder="Organization ID provided by your administrator"
+            required
+            onChange={handleChange}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-900 dark:text-white transition-colors duration-200"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+            Department
+          </label>
+          <input
+            name="department"
+            required
+            onChange={handleChange}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-900 dark:text-white transition-colors duration-200"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+            Role
+          </label>
+          <select
+            name="role"
+            value={formData.role}
+            onChange={handleChange}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent dark:bg-gray-900 dark:text-white transition-colors duration-200"
+          >
+            <option value="IT_VENDOR">IT Vendor</option>
+            <option value="HIRING_MANAGER">Hiring Manager</option>
+            <option value="BUSINESS_USER">Business User</option>
+            <option value="BUSINESS_APPROVER">Business Approver</option>
+            <option value="FINANCE_MANAGER">Finance Manager</option>
+            <option value="PROCUREMENT_MANAGER">Procurement Manager</option>
+            <option value="RESOURCE_MANAGER">Resource Manager</option>
+            <option value="VENDOR_MANAGER">Vendor Manager</option>
+          </select>
+        </div>
+
+        <motion.button
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          type="submit"
+          disabled={isLoading}
+          className="w-full bg-black dark:bg-white text-white dark:text-black py-2 rounded-lg font-medium hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors duration-200 disabled:opacity-50"
+        >
+          {isLoading ? "Loading..." : "Create Account"}
+        </motion.button>
+      </form>
+
+      <div className="mt-6 text-center">
+        <p className="text-sm text-gray-600 dark:text-gray-400">
+          Already have an account?{" "}
+          <Link
+            href="/login"
+            className="font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300"
+          >
+            Sign in
+          </Link>
+        </p>
+      </div>
+    </motion.div>
+  );
+}

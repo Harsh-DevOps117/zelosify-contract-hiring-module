@@ -7,7 +7,7 @@ export async function requireHiringSession(role) {
   let response;
   try {
     response = await fetch(
-      `${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000/api/v1"}/hiring/session`,
+      `${process.env.BACKEND_INTERNAL_URL || process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000/api/v1"}/hiring/session`,
       {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
@@ -17,7 +17,7 @@ export async function requireHiringSession(role) {
   } catch {
     throw new Error("The hiring service is unavailable. Please retry shortly.");
   }
-  if (response.status === 401) redirect("/login");
+  if (response.status === 401) redirect("/auth/session-expired");
   if (response.status === 403) redirect("/user");
   if (!response.ok)
     throw new Error("Unable to verify access to the hiring workspace.");

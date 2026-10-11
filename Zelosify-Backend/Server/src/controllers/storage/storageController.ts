@@ -8,8 +8,6 @@ import type {
   ApiResponse,
 } from "../../types/typeIndex.js";
 
-const storageService = createStorageService();
-
 /**
  * List objects in user's storage folder
  * @param req - Authenticated request
@@ -40,7 +38,7 @@ export const listOfObjects = async (
       userId
     );
 
-    const objects = await storageService.listObjects(folderPath);
+    const objects = await createStorageService().listObjects(folderPath);
     const files = objects.map((f: any) => ({
       key: f.Key,
       lastModified: f.LastModified,

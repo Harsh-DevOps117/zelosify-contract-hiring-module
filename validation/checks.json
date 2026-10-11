@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-11",
+  "backendBuild": "passed",
+  "backendTests": {
+    "passed": 75,
+    "failed": 0,
+    "integrationTests": 17,
+    "database": "dedicated local PostgreSQL validation database"
+  },
+  "hiringLint": "passed",
+  "onboardingLint": "passed with two image optimization warnings",
+  "originalAuthFiles": "unchanged relative to f771eee",
+  "storage": "local PostgreSQL bytea, persistent Docker volume",
+  "liveGroqSla": "not passed; see live-performance.json",
+  "frontendDockerBuild": "passed",
+  "backendDockerBuild": "passed",
+  "browserSignup": "passed: registration, wrong-code retry, TOTP, signed session and vendor route",
+  "runningServices": {
+    "backend": "healthy",
+    "frontend": "healthy",
+    "postgres": "healthy",
+    "keycloak": "healthy",
+    "worker": "running"
+  },
+  "publication": "prepared locally; not pushed",
+  "loginRedirectTests": {
+    "passed": 10,
+    "failed": 0,
+    "browser": "expired and backend-rejected cookies recover and reload successfully"
+  }
+}

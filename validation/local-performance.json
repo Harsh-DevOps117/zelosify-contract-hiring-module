@@ -1,0 +1,17 @@
+{
+  "event": "hiring.performance",
+  "mode": "SCRIPTED_LLM_REAL_PARSERS",
+  "measuredAt": "2026-10-11T10:53:36.432Z",
+  "scope": "agent_and_real_parsers; excludes database and object-storage transfer",
+  "profiles": 100,
+  "concurrency": 4,
+  "successes": 100,
+  "failures": 0,
+  "errors": {},
+  "processingP95Ms": 212,
+  "maxProcessingMs": 264,
+  "queueDelayP95Ms": 2497,
+  "totalMs": 2706,
+  "passed": true,
+  "note": "Scripted model with real PDF/PPTX parsers; not live Groq SLA evidence."
+}

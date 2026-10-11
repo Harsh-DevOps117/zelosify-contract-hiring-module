@@ -1,10 +1,12 @@
 # Contract hiring module
 
+Current local deployment and evidence are summarized in [SUBMISSION_STATUS.md](SUBMISSION_STATUS.md). The user reconfirmed PostgreSQL document storage on 2026-10-11; S3 remains intentionally out of scope for this local variant.
+
 ## What changed and why
 
-Implemented the vendor and hiring manager workflows from `Round_One_Task.pdf` inside the supplied repository. The feature adds tenant-scoped openings, private PDF/PPTX uploads, asynchronous tool-calling recommendations, and shortlist/reject decisions. New source and test files contain no code comments; explanations live here. Existing unrelated source comments and modules are retained.
+Implemented the vendor and hiring manager workflows from `Round_One_Task.pdf` inside the supplied repository. At the user’s request, this stage stores document bytes in PostgreSQL instead of S3; that intentionally changes the PDF assignment’s storage requirement. The feature adds tenant-scoped openings, private PDF/PPTX uploads, asynchronous tool-calling recommendations, and shortlist/reject decisions. New source and test files contain no code comments; explanations live here. Existing unrelated source comments and modules are retained.
 
-The setup guide supplied integration context. Its instruction to publish to another repository was not treated as a request to publish, and its example credentials were not copied into the application. No packages or external infrastructure products were added to the application's dependency manifests.
+The setup guide supplied integration context. Its instruction to publish to another repository was not treated as a request to publish, and its example credentials were not copied into the application. The Groq provider reads the server-only `LLM_API_KEY` setting (with `GROQ_API_KEY` retained as a backward-compatible fallback). No packages or external infrastructure products were added to the application's dependency manifests.
 
 The original project provides Express/TypeScript, Next.js, Prisma/PostgreSQL, Keycloak, AWS SDK, AJV, Vitest, and react-dropzone. The implementation reuses them. Groq uses Node's native HTTP client. The existing PDF library performs PDF extraction; a bounded ZIP/OOXML reader handles PPTX without adding an archive service or package.
 
@@ -18,7 +20,7 @@ The original project provides Express/TypeScript, Next.js, Prisma/PostgreSQL, Ke
 | `validation.ts` | Compiled AJV schemas and bounded pagination/file validation. |
 | `repository.ts` | Scoped reads, explicit persona response projections, serializable transaction helper and bounded conflict retries. |
 | `service.ts`, `upload-ticket.ts` | Upload reservation/signing, immutable upload completion, atomic submission, soft delete, decisions and recommendation re-runs. |
-| `storage.ts` | Private S3 retrieval and immutable encrypted writes behind a testable interface. |
+| `storage.ts` | PostgreSQL `bytea` document storage, scoped retrieval, SHA-256 integrity checks and immutable transactional writes. |
 | `parser.ts`, `workers/resume.cjs` | Bounded document extraction in terminable worker threads so parsing cannot freeze the API event loop. |
 | `agent/provider.ts` | Groq function-calling transport, response validation and cancellation. No SDK dependency is needed. |
 | `agent/tools.ts`, `scoring.ts` | Stateful tool registry and pure skill, experience, location and weighted-scoring policy. |
@@ -26,6 +28,8 @@ The original project provides Express/TypeScript, Next.js, Prisma/PostgreSQL, Ke
 | `recommendation-service.ts`, `worker.ts` | Durable job claims, crash recovery, retry scheduling and atomic result publication. |
 | `Zelosify-Frontend/src/features/hiring` | API client, cancellable query/polling hook, server authorization, scoped styling and reusable UI components. |
 | `Zelosify-Frontend/src/app/(Hiring)` | Thin role-specific routes and layouts, loading states and error boundary. |
+
+The inherited AWS listing controller now initializes its legacy adapter only when that endpoint is called, so API startup no longer requires AWS configuration. Other inherited AWS functionality remains available when separately configured.
 
 Shared changes are limited to registering the new backend router, extending Prisma, exposing navigation and middleware routing, and fixing the frontend ESLint integration. A separate route group avoids the existing dashboard's mobile-blocking overlay while preserving the old dashboard.
 
@@ -36,7 +40,8 @@ flowchart LR
   UI[Role guarded Next.js pages] --> Auth[Verified JWT and database identity]
   Auth --> API[Controller and hiring service]
   API --> DB[(Prisma and PostgreSQL)]
-  API --> Storage[Private S3 adapter]
+  API --> Storage[PostgreSQL document adapter]
+  Storage --> Blobs[(ProfileDocument bytea)]
   DB --> Claim[Worker lease]
   Claim --> Agent[Agent orchestrator]
   Agent <--> LLM[Groq tool calling]
@@ -61,22 +66,28 @@ The migration adds a composite foreign key from an opening's manager and tenant 
 
 ## Storage and upload protocol
 
-The assignment asks for presigned uploads while also prohibiting browser-to-S3 access. The presign endpoint therefore returns an HMAC-signed **backend upload path**, not an S3 URL. The signature binds the reservation, opening, authenticated uploader, expiry, size and media type. The database reservation expires after fifteen minutes and authorization is required even with a valid signature.
+`ProfileDocument` holds only the document key, binary bytes, SHA-256 checksum and creation time. A foreign key ties it to `ProfileUpload`, where ownership, file metadata and opening/tenant scope already live. Keeping the blob in a separate relation prevents ordinary profile and opening queries from loading megabytes of file content. The database enforces a binary size bound of one byte through 10 MB and checksum format.
+
+The presign endpoint keeps its existing route for frontend compatibility and returns an HMAC-signed **backend upload path**. It does not contact S3. The signature binds the reservation, opening, authenticated uploader, expiry, size and media type. The database reservation expires after fifteen minutes and authorization is required even with a valid signature.
 
 1. Validate a batch of one to ten files, each at most 10 MB. Accept PDF and PPTX only; reject path separators, control characters and mismatched extensions/types.
 2. Transactionally create upload reservations. Limit each vendor to fifty unexpired, unconsumed reservations.
-3. Upload bytes to the signed backend path. Validate size and file magic before transferring to private S3 with server-side encryption and conditional immutable writes.
-4. Submit reservation IDs. A serializable Prisma transaction creates profiles and durable jobs together and consumes every reservation, or rolls back the whole batch.
+3. Upload bytes to the signed backend path. Within one serializable transaction, recheck ownership and expiry, validate size/type/file magic, insert the `bytea` document, and mark the reservation uploaded. A failure rolls back both bytes and upload state. Identical retries reuse the same document; different bytes for an existing key return 409.
+4. Submit reservation IDs. A serializable Prisma transaction verifies that every document exists, creates profiles and durable jobs together, and consumes every reservation, or rolls back the whole batch. Document-existence checks select only keys, never file bytes.
 5. Retrying the same submitted reservation IDs returns the same profiles without duplicate jobs. The browser retains the batch during a failed attempt so a lost response can be retried safely.
 6. Serve authorized file bytes through the backend with private/no-store caching, safe content disposition and a sandbox policy. PDFs open inline; PPTX files download for a local viewer.
 
-Keys use `<tenantId>/<openingId>/<timestamp>_<reservationId>_<sanitizedFilename>`. S3 never receives a browser-selected key. The additional reservation identifier prevents collisions. Soft deletion retains audit records and private objects while removing read, decision and worker-publication access.
+Keys use `<tenantId>/<openingId>/<timestamp>_<reservationId>_<sanitizedFilename>`. Keys are generated by the server and are not filesystem paths or object-store locations. The additional reservation identifier prevents collisions. Soft deletion retains audit records and database document bytes while removing read, decision and worker-publication access.
 
-The adapter uses bounded buffers for the 10 MB maximum, rather than exposing signed download URLs. Transport failures after storage upload may leave an unsubmitted object. Production retention must reconcile expired unconsumed reservations with objects before deleting them; a blanket prefix lifecycle deletion would incorrectly remove submitted profiles.
+The adapter uses bounded buffers for the 10 MB maximum and checks SHA-256 on reads. Every read scopes the document through its reservation’s tenant and uploader; the service additionally checks profile visibility and manager ownership. A new adapter or process reads the same committed database bytes. There is no in-memory or disk-file fallback.
+
+PostgreSQL staging trades object-store scalability for simpler local operations and a single transactional boundary. Database backups now include document bytes; configure database transport/disk encryption and capacity accordingly. Expired, unconsumed uploads and soft-deleted documents remain retained until an explicit retention policy removes them. Deleting a reservation cascades to its blob, so cleanup must be restricted to expired, unconsumed reservations.
+
+The new migration renames existing `s3Key` columns to `documentKey` and preserves their values and indexes. It does not download historical S3 objects. If an earlier S3 deployment has real files, backfill their bytes into `ProfileDocument` using the corresponding reservations before switching those records to this deployment, or re-upload them. Missing document bytes produce a clear 404 rather than a fabricated preview. No historical migrations were rewritten for this change.
 
 ## Transactions and worker recovery
 
-`ProfileUpload` tracks upload intent. `RecommendationJob` is a transactional outbox and work queue in the existing PostgreSQL database, avoiding an additional broker. Profile creation and job creation cannot partially succeed.
+`ProfileUpload` tracks upload intent and `ProfileDocument` holds committed bytes. `RecommendationJob` is a transactional outbox and work queue in the existing PostgreSQL database, avoiding an additional broker. Profile creation and job creation cannot partially succeed.
 
 Workers use serializable conditional claims, unique lease tokens and ten-second leases. Processing runs outside database transactions. Multiple workers can run concurrently with a default of four active jobs per worker process. A crashed worker's expired job can be reclaimed. Retries are bounded to three attempts with exponential delay.
 
@@ -86,11 +97,13 @@ Shortlist/reject operations recheck manager scope inside the transaction, record
 
 ## Agent execution and validation
 
+The default Groq model is `qwen/qwen3.8-27b`, with `GROQ_MODEL` available as an override. The previous Llama default returned `model_not_found` for the configured account. Qwen supports batched tool calls according to [Groq’s tool-use matrix](https://console.groq.com/docs/tool-use/overview); model availability follows [Groq’s deprecation schedule](https://console.groq.com/docs/deprecations). Provider and execution metadata share the same model resolver. Authentication, unavailable-model and rate-limit failures have distinct sanitized codes.
+
 The production path always uses a real function-calling LLM. The scripted provider exists only under `tests/hiring` and is never selected by production code. Missing Groq configuration does not produce fabricated recommendations.
 
 The orchestrator sends a small opening requirements object, not a raw Prisma model. Tool-call batching is enabled: the model can submit feature extraction and the subsequent state-based tools together, and the registry executes them in dependency order as listed to reduce provider round trips. It gives the model a tool registry and lets the model select tool calls. The registry enforces prerequisites and retains trusted intermediate state:
 
-1. `parse_resume`: retrieve the assigned private object and extract bounded untrusted text.
+1. `parse_resume`: retrieve the assigned PostgreSQL document and extract bounded untrusted text.
 2. `extract_features`: accept validated experience, skills, location, education and keywords proposed from the document. Reject skills absent from extracted text.
 3. `normalize_skills`: normalize aliases and deduplicate the extracted skills.
 4. `match_candidate`: pass the registry's structured features to the deterministic matching engine.
@@ -128,22 +141,22 @@ Both personas share metadata, badges, pagination, loading, errors and theme cont
 
 ## Latency and observability
 
-The worker applies a 1500 ms processing abort signal spanning profile loading, private object retrieval, parsing and model/tool execution. It checks the deadline again before result publication. Provider calls and parser workers honor cancellation. Network/database scheduling and final transaction commit can add overhead; there is no claim of a mathematically exact wall-clock ceiling.
+The worker applies a 1500 ms processing abort signal spanning profile loading, PostgreSQL document retrieval, parsing and model/tool execution. It checks the deadline again before result publication. Provider calls and parser workers honor cancellation. Document reads check the abort signal before and after the Prisma query; Prisma does not cancel an in-flight query through that signal. Network/database scheduling and final transaction commit can add overhead; there is no claim of a mathematically exact wall-clock ceiling.
 
 Submission returns after the profile/job transaction; it does not wait for model inference. JSON requests use short client timeouts. Binary upload transfers have a separate 30-second browser transport timeout so large files on slow connections can finish. This is a practical exception to interpreting the assignment's two-second limit as an absolute end-to-end file-transfer bound.
 
 Module logs are structured JSON and include request correlation ID, status, start time, queue delay, parsing/matching tool durations, token usage, final score, retries, sanitized errors and processing latency. Legacy modules retain their existing logging behavior. Queue delay is reported separately from processing time.
 
-A free hosted model requiring several tool-calling round trips may exceed 1500 ms. Such attempts fail/retry rather than report a fictitious success. Live provider performance, S3 latency and deployment-scale API P95 require configured services and measured verification.
+A free hosted model requiring several tool-calling round trips may exceed 1500 ms. Such attempts fail/retry rather than report a fictitious success. The live Groq smoke check on 2026-10-09 timed out under the production 1500 ms budget. A separate diagnostic with a 15-second limit read a PDF from PostgreSQL, parsed it and completed all five real Groq tool stages in 2252 ms, returning a validated score of 1. This diagnostic did not publish a worker result or relax the worker deadline. Another probe encountered the account’s rate limit. The longer limit was used only by the diagnostic; production remains at 1500 ms. Successful live SLA compliance is therefore not established. Deployment-scale throughput and API P95 still require measurement.
 
 ## Validation performed
 
 - Backend TypeScript build and Prisma generation pass.
 - The additive migration applies to real PostgreSQL; the Bruce Wayne Corp seed creates twelve varied openings.
-- The complete backend test run passes: 54 tests, including existing tests, policy boundaries, malformed output, prompt isolation, real parsers and HTTP/database integration.
-- HTTP integration uses real RS256-signed tokens and a local JWKS endpoint, real PostgreSQL transactions, and test-only storage/model adapters. It covers upload → submit → recommend → shortlist, cross-tenant/cross-vendor/cross-manager access, origin checks, replayed submissions, rollback, concurrent claims and deletion during inference.
-- The 100-profile performance test uses real PDF/PPTX parsers and a scripted model. One isolated run completed 100/100, processing P95 126 ms, maximum 147 ms, queue-delay P95 1484 ms, total 1686 ms at concurrency four. These measurements are not live Groq or S3 results.
+- The complete backend test run passes: 69 tests, including existing tests, policy boundaries, malformed output, prompt isolation, real parsers and HTTP/database integration.
+- HTTP integration uses real RS256-signed tokens and a local JWKS endpoint, real PostgreSQL transactions, real PostgreSQL blob storage and a test-only model adapter. It covers upload → submit → recommend → shortlist, cross-tenant/cross-vendor/cross-manager access, origin checks, replayed submissions, rollback, concurrent claims and deletion during inference. Additional tests cover durable blob retrieval, cross-tenant adapter access, immutable retries, missing-byte rejection, and rollback after a blob write.
+- The 100-profile performance test uses real PDF/PPTX parsers and a scripted model. One isolated run completed 100/100, processing P95 126 ms, maximum 147 ms, queue-delay P95 1484 ms, total 1686 ms at concurrency four. These earlier parser/agent measurements are not live Groq results or database-inclusive throughput measurements.
 - The hiring frontend lint check and production build pass. Chromium checks covered vendor listing/upload, hidden vendor recommendations, dark mode, 390 px mobile layout without horizontal overflow, manager shortlist/reject, virtualization with 66 profiles, and anonymous/wrong-role redirects, with zero page errors.
 - The legacy repository-wide frontend lint command exposes ten pre-existing errors and sixteen warnings in unrelated files. Build lint is scoped to the new hiring feature; `npm run lint` still reports the legacy issues instead of silently disabling those rules.
 
-See `HIRING_SETUP.md` for environment configuration, launch commands and repeatable tests. Live Keycloak login against a configured realm, live S3 upload/download, Groq reasoning quality and live SLA compliance remain external-service verification items. Nothing has been pushed or deployed.
+See `HIRING_SETUP.md` for environment configuration, launch commands and repeatable tests. Local Keycloak registration/TOTP and vendor routing have since been verified in Chromium. Live Groq SLA compliance remains unmet; the current 100-profile evidence is in `validation/live-performance.json`. Remote submission still requires authenticated access to the user-owned repository.

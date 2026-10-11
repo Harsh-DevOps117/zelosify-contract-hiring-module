@@ -114,7 +114,7 @@ model Opening {
 model hiringProfile {
   id                       Int                  @id @default(autoincrement())
   openingId                String
-  s3Key                    String               @unique
+  documentKey              String               @unique
   uploadedBy               String
   fileName                 String
   contentType              String
@@ -147,7 +147,7 @@ model ProfileUpload {
   id          String   @id @default(uuid())
   openingId   String
   uploadedBy  String
-  s3Key       String   @unique
+  documentKey String   @unique
   fileName    String
   contentType String
   size        Int
@@ -155,6 +155,7 @@ model ProfileUpload {
   uploadedAt  DateTime?
   consumedAt  DateTime?
   opening     Opening  @relation(fields: [openingId], references: [id])
+  document    ProfileDocument?
 
   @@index([openingId, uploadedBy, expiresAt])
 }
@@ -173,4 +174,12 @@ model RecommendationJob {
   profile     hiringProfile        @relation(fields: [profileId], references: [id])
 
   @@index([state, availableAt, lockedUntil])
+}
+
+model ProfileDocument {
+  documentKey String        @id
+  bytes       Bytes         @db.ByteA
+  sha256      String        @db.Char(64)
+  createdAt   DateTime      @default(now())
+  upload      ProfileUpload @relation(fields: [documentKey], references: [documentKey], onDelete: Cascade, onUpdate: Cascade)
 }

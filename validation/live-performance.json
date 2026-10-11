@@ -1,0 +1,20 @@
+{
+  "event": "hiring.performance",
+  "mode": "LIVE_GROQ",
+  "measuredAt": "2026-10-11T10:40:47.710Z",
+  "scope": "agent_and_real_parsers; excludes database and object-storage transfer",
+  "profiles": 100,
+  "concurrency": 4,
+  "successes": 1,
+  "failures": 99,
+  "errors": {
+    "PROVIDER_RATE_LIMITED": 97,
+    "PROCESSING_DEADLINE": 2
+  },
+  "processingP95Ms": 204,
+  "maxProcessingMs": 1503,
+  "queueDelayP95Ms": 3448,
+  "totalMs": 3675,
+  "passed": false,
+  "note": "Real Groq calls and real parsers; excludes S3/database. This failure is not evidence of meeting the assignment SLA."
+}

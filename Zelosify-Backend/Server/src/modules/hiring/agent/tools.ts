@@ -72,6 +72,12 @@ export class ToolRegistry {
   private match?: Match;
   score?: Score;
   trace: Trace[] = [];
+  get availableTools() {
+    if (this.score) return [];
+    return this.raw
+      ? definitions.filter((tool) => tool.function.name !== "parse_resume")
+      : definitions.filter((tool) => tool.function.name === "parse_resume");
+  }
   constructor(
     private opening: OpeningRequirements,
     private parse: (signal: AbortSignal) => Promise<string>,

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { extractRoleFromToken } from "@/utils/Auth/middlewareUtils";
+import { decodeJwt, extractRoleFromToken } from "@/utils/Auth/middlewareUtils";
+import { clearSessionCookies } from "@/features/onboarding/session-cookies";
 
 export function middleware(request) {
   // Get the pathname of the request
@@ -17,8 +18,22 @@ export function middleware(request) {
   const refreshToken = request.cookies.get("refresh_token")?.value;
   const registrationToken = request.cookies.get("registration_token")?.value;
 
-  // A user is considered authenticated if they have BOTH tokens
-  const isAuthenticated = !!accessToken && !!refreshToken;
+  // Cookie lifetime can exceed the access token's lifetime. This is only a
+  // routing check; protected backend endpoints still verify the JWT signature.
+  const claims = accessToken ? decodeJwt(accessToken) : null;
+  const isAuthenticated =
+    !!accessToken &&
+    !!refreshToken &&
+    Number.isFinite(claims?.exp) &&
+    claims.exp > Date.now() / 1000;
+
+  if (!isAuthenticated && (accessToken || refreshToken)) {
+    return clearSessionCookies(
+      isPublicPath
+        ? NextResponse.next()
+        : NextResponse.redirect(new URL("/login", request.url))
+    );
+  }
   // A user is in registration process if they have the special token
   const isRegistering = !!registrationToken;
 

@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { expect, it } from "vitest";
 import { RecommendationAgent } from "../../src/modules/hiring/agent/orchestrator.js";
 import { GroqProvider } from "../../src/modules/hiring/agent/provider.js";
@@ -11,9 +12,9 @@ import {
 } from "./fixtures.js";
 it("processes 100 PDF/PPTX profiles and reports success, latency and queue delay", async () => {
   const live = process.env.HIRING_PERF_LIVE === "1";
-  if (live && !process.env.GROQ_API_KEY)
+  if (live && !process.env.LLM_API_KEY && !process.env.GROQ_API_KEY)
     throw new Error(
-      "GROQ_API_KEY is required for live performance verification",
+      "LLM_API_KEY is required for live performance verification",
     );
   const provider = live ? new GroqProvider() : new ScriptedProvider();
   const agent = new RecommendationAgent(provider);
@@ -22,6 +23,7 @@ it("processes 100 PDF/PPTX profiles and reports success, latency and queue delay
   const queueDelays: number[] = [];
   let next = 0;
   let failed = 0;
+  const errors: Record<string, number> = {};
   const fixtures = [pdfFixture(), pptxFixture()];
   await Promise.all(
     Array.from({ length: 4 }, async () => {
@@ -38,8 +40,10 @@ it("processes 100 PDF/PPTX profiles and reports success, latency and queue delay
             signal,
           );
           expect(result.score).toBe(1);
-        } catch {
+        } catch (error) {
           failed++;
+          const code = signal.aborted ? "PROCESSING_DEADLINE" : error instanceof Error ? error.message : "UNKNOWN_FAILURE";
+          errors[code] = (errors[code] ?? 0) + 1;
         }
         latencies.push(performance.now() - begin);
       }
@@ -49,10 +53,13 @@ it("processes 100 PDF/PPTX profiles and reports success, latency and queue delay
   queueDelays.sort((a, b) => a - b);
   const report = {
     mode: live ? "LIVE_GROQ" : "SCRIPTED_LLM_REAL_PARSERS",
+    measuredAt: new Date().toISOString(),
+    scope: "agent_and_real_parsers; excludes database and object-storage transfer",
     profiles: 100,
     concurrency: 4,
     successes: 100 - failed,
     failures: failed,
+    errors,
     processingP95Ms: Math.round(latencies[94]),
     maxProcessingMs: Math.round(latencies[99]),
     queueDelayP95Ms: Math.round(queueDelays[94]),

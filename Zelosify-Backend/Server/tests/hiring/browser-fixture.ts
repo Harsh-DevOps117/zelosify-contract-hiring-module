@@ -11,7 +11,7 @@ import { requirements, pdfFixture, ScriptedProvider } from "./fixtures.js";
 import { HiringRepository } from "../../src/modules/hiring/repository.js";
 import { RecommendationAgent } from "../../src/modules/hiring/agent/orchestrator.js";
 import { RecommendationService } from "../../src/modules/hiring/recommendation-service.js";
-import type { ProfileStorage } from "../../src/modules/hiring/storage.js";
+import { PostgresProfileStorage } from "../../src/modules/hiring/storage.js";
 if (!process.env.HIRING_BROWSER_DATABASE_URL)
   throw new Error("A dedicated HIRING_BROWSER_DATABASE_URL is required");
 const db = new PrismaClient({
@@ -74,20 +74,40 @@ const fixture = await db.$transaction(async (tx) => {
   });
   return { tenant, manager, vendor, opening };
 });
-const storageObjects = new Map<string, Buffer>();
-const storage: ProfileStorage = {
-  put: async (key, bytes) => {
-    storageObjects.set(key, bytes);
-  },
-  get: async (key) => storageObjects.get(key) ?? pdfFixture(),
-};
+const storage = new PostgresProfileStorage(db);
 await db.$transaction(async (tx) => {
-  for (let i = 0; i < 65; i++)
+  for (let i = 0; i < 65; i++) {
+    const documentKey = `browser/${fixture.tenant.tenantId}/${i}`;
+    await tx.profileUpload.create({
+      data: {
+        documentKey,
+        openingId: fixture.opening.id,
+        uploadedBy: fixture.vendor.id,
+        fileName: `Candidate_${String(i + 1).padStart(2, "0")}.pdf`,
+        contentType: "application/pdf",
+        size: pdfFixture().length,
+        expiresAt: new Date(Date.now() + 900000),
+        uploadedAt: new Date(),
+      },
+    });
+    await storage.put(
+      tx,
+      {
+        documentKey,
+        tenantId: fixture.tenant.tenantId,
+        uploadedBy: fixture.vendor.id,
+      },
+      pdfFixture(),
+    );
+    await tx.profileUpload.update({
+      where: { documentKey },
+      data: { consumedAt: new Date() },
+    });
     await tx.hiringProfile.create({
       data: {
         openingId: fixture.opening.id,
         uploadedBy: fixture.vendor.id,
-        s3Key: `browser/${i}`,
+        documentKey,
         fileName: `Candidate_${String(i + 1).padStart(2, "0")}.pdf`,
         contentType: "application/pdf",
         size: pdfFixture().length,
@@ -101,6 +121,7 @@ await db.$transaction(async (tx) => {
         recommendationVersion: "hiring-agent-v1",
       },
     });
+  }
 });
 const tokens = Object.fromEntries(
   ["vendor", "manager"].map((name) => {

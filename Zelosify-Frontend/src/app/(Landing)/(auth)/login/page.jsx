@@ -1,5 +1,5 @@
-import LoginPage from "@/pages/LandingPage/auth/LoginPage";
+import Component from "@/features/onboarding/LoginLayout";
 
-export default function page() {
-  return <LoginPage />;
+export default function Page() {
+  return <Component />;
 }

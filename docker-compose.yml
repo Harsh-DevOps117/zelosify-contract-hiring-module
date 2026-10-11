@@ -1,0 +1,144 @@
+name: zelosify-eval
+
+x-backend: &backend
+  image: zelosify-eval-backend:local
+  build:
+    context: .
+    target: backend
+  init: true
+  environment: &backend-env
+    NODE_ENV: development
+    PORT: "5000"
+    DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-local-postgres}@postgres:5432/zelosify?schema=app
+    FRONTEND_URL: http://localhost:5173
+    KEYCLOAK_URL: http://keycloak:8080/auth
+    KEYCLOAK_REALM: Zelosify
+    KEYCLOAK_CLIENT_ID: dynamic-client
+    KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-local-client-secret}
+    KEYCLOAK_ADMIN: admin
+    KEYCLOAK_ADMIN_USERNAME: admin
+    KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-local-admin}
+    JWT_SECRET: ${JWT_SECRET:-local-jwt-secret-change-before-deployment}
+    SESSION_SECRET: ${SESSION_SECRET:-local-session-secret-change-before-deployment}
+    ENCRYPTION_ALGORITHM: aes-256-gcm
+    ENCRYPTION_KEY: ${ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+    HIRING_UPLOAD_SIGNING_SECRET: ${HIRING_UPLOAD_SIGNING_SECRET:-local-upload-secret-change-before-deployment}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-postgres}
+      POSTGRES_DB: zelosify
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5445:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d zelosify"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1.4
+    restart: unless-stopped
+    command: ["start-dev", "--import-realm", "--http-relative-path=/auth"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-local-admin}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/zelosify
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-local-postgres}
+      KC_DB_SCHEMA: public
+      KC_HOSTNAME_STRICT: "false"
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_MANAGEMENT_RELATIVE_PATH: /
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-local-client-secret}
+    volumes:
+      - ./docker/keycloak/Zelosify-realm.json:/opt/keycloak/data/import/Zelosify-realm.json:ro,Z
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -ec
+        - "{ printf 'HEAD /health/ready HTTP/1.0\r\n\r\n' >&0; grep 'HTTP/1.0 200'; } 0<>/dev/tcp/localhost/9000"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  migrate:
+    <<: *backend
+    restart: "no"
+    environment:
+      <<: *backend-env
+      HIRING_SEED_MANAGER_ID: ${HIRING_SEED_MANAGER_ID:-}
+    command: ["sh", "-ec", "npm run prisma:deploy && node dist/scripts/seedHiring.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    <<: *backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:5000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    <<: *backend
+    restart: unless-stopped
+    command: ["node", "dist/modules/hiring/worker.js"]
+    environment:
+      <<: *backend-env
+      LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in the eval .env file to run the hiring worker}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.groq.com/openai/v1}
+      GROQ_MODEL: ${GROQ_MODEL:-qwen/qwen3.8-27b}
+      HIRING_WORKER_CONCURRENCY: ${HIRING_WORKER_CONCURRENCY:-4}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: .
+      target: frontend
+      args:
+        NEXT_PUBLIC_BACKEND_URL: http://localhost:5000/api/v1
+    init: true
+    restart: unless-stopped
+    environment:
+      BACKEND_INTERNAL_URL: http://backend:5000/api/v1
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/login').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  postgres_data:
