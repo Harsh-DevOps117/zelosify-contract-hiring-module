@@ -144,5 +144,5 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 
-# Demo recording: keep the compressed mp4 + script, skip the raw capture
-demo/*.webm
+# Demo recording: kept locally only, not pushed to GitHub
+demo/
